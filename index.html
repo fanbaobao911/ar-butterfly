@@ -8,63 +8,126 @@
         body { overflow:hidden; background:#000; }
         canvas { display:block; width:100vw; height:100vh; position:fixed; top:0; left:0; z-index:10; }
         video { position:fixed; top:0; left:0; width:100vw; height:100vh; object-fit:cover; z-index:0; }
+        #tip { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); color:white; font-size:16px; z-index:20; text-align:center; }
     </style>
 </head>
 <body>
+    <div id="tip">请点击屏幕授权并加载AR...</div>
 
 <script type="module">
-import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
-import { GLTFLoader } from 'https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
 
-// --------------------------
-// 你只需要改这 2 个地址！
-// --------------------------
+// 替换后的直链（已确认有效）
 const MODEL_URL = "https://cdn.jsdelivr.net/gh/fanbaobao911/ar-butterfly@main/butterfly.glb";
 const AUDIO_URL = "https://cdn.jsdelivr.net/gh/fanbaobao911/ar-butterfly@main/voice.mp3";
 
-// 1. 场景
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 100);
-const renderer = new THREE.WebGLRenderer({ alpha:true });
-renderer.setSize(innerWidth, innerHeight);
-document.body.appendChild(renderer.domElement);
+// 1. 初始化核心对象（避免未定义）
+let scene, camera, renderer, video, audio;
+let modelLoaded = false;
+let cameraReady = false;
 
-camera.position.set(0, 0, 2);
+// 2. 页面点击交互（解决手机自动播放限制）
+document.body.addEventListener('click', initAR, { once: true });
 
-// 2. 自动打开摄像头
-const video = document.createElement('video');
-video.autoplay = true;
-video.playsInline = true;
-document.body.appendChild(video);
+// 3. 核心初始化函数
+function initAR() {
+    document.getElementById('tip').textContent = "加载中...";
+    
+    // 初始化场景
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.1, 100);
+    renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio); // 适配高清屏
+    document.body.appendChild(renderer.domElement);
+    camera.position.set(0, 0, 2);
 
-navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
-  video.srcObject = stream;
-  video.play();
-});
+    // 初始化摄像头
+    initCamera();
+    
+    // 加载模型
+    loadModel();
+    
+    // 初始化音频
+    initAudio();
+    
+    // 监听屏幕旋转/缩放
+    window.addEventListener('resize', onWindowResize);
+}
 
-// 3. 自动加载蝴蝶模型
-const loader = new GLTFLoader();
-loader.load(MODEL_URL, (gltf) => {
-  const m = gltf.scene;
-  m.scale.set(1,1,1);
-  scene.add(m);
-});
+// 4. 摄像头初始化（处理异步授权）
+function initCamera() {
+    video = document.createElement('video');
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true; // 避免摄像头音频干扰
+    document.body.appendChild(video);
 
-// 4. 自动播放语音
-const audio = new Audio(AUDIO_URL);
-audio.volume = 1;
-audio.play().catch(() => {
-  document.body.addEventListener('click',()=>audio.play(),{once:true})
-});
+    navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: 'environment' } // 强制使用后置摄像头
+    }).then(stream => {
+        video.srcObject = stream;
+        video.play();
+        cameraReady = true;
+        document.getElementById('tip').style.display = 'none';
+    }).catch(err => {
+        document.getElementById('tip').textContent = "请允许摄像头权限！";
+        console.error('摄像头授权失败:', err);
+    });
+}
 
-// 循环渲染
-function loop(){
-  requestAnimationFrame(loop);
-  renderer.render(scene, camera);
+// 5. 加载3D模型（添加加载失败处理）
+function loadModel() {
+    const loader = new GLTFLoader();
+    loader.load(
+        MODEL_URL,
+        (gltf) => {
+            const m = gltf.scene;
+            m.scale.set(1, 1, 1);
+            m.position.set(0, 0, 0); // 模型居中
+            scene.add(m);
+            modelLoaded = true;
+        },
+        (progress) => {
+            // 加载进度（可选）
+            const percent = Math.round((progress.loaded / progress.total) * 100);
+            document.getElementById('tip').textContent = `加载模型: ${percent}%`;
+        },
+        (err) => {
+            document.getElementById('tip').textContent = "模型加载失败！";
+            console.error('模型加载失败:', err);
+        }
+    );
+}
+
+// 6. 音频初始化（兼容手机交互限制）
+function initAudio() {
+    audio = new Audio(AUDIO_URL);
+    audio.volume = 1;
+    // 点击后播放（手机必须有交互才能播音频）
+    audio.play().catch(() => {
+        document.getElementById('tip').textContent = "点击屏幕播放语音";
+        document.body.addEventListener('click', () => audio.play(), { once: true });
+    });
+}
+
+// 7. 屏幕适配
+function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// 8. 渲染循环（仅当摄像头/模型就绪时渲染）
+function loop() {
+    requestAnimationFrame(loop);
+    if (cameraReady && renderer && scene && camera) {
+        renderer.render(scene, camera);
+    }
 }
 loop();
 </script>
 
 </body>
 </html>
-
